@@ -27,9 +27,51 @@
         </div>
       </div>
 
+      <div v-if="submittedOrders.length" class="card submitted-orders">
+        <div class="card-header">
+          <h3 class="card-title">{{ t('orders.submittedOrders') }} ({{ submittedOrders.length }})</h3>
+        </div>
+        <div class="table-container">
+          <table class="orders-table submitted-table">
+            <thead>
+              <tr>
+                <th>{{ t('orders.table.orderNumber') }}</th>
+                <th>{{ t('orders.table.items') }}</th>
+                <th>{{ t('orders.table.orderDate') }}</th>
+                <th>{{ t('orders.table.expectedDelivery') }}</th>
+                <th>{{ t('orders.leadTime') }}</th>
+                <th>{{ t('orders.table.totalValue') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="o in submittedOrders" :key="o.id">
+                <td><strong>{{ o.order_number }}</strong></td>
+                <td>
+                  <details class="items-details">
+                    <summary class="items-summary">
+                      {{ t('orders.itemsCount', { count: o.items.length }) }}
+                    </summary>
+                    <div class="items-dropdown">
+                      <div v-for="(item, idx) in o.items" :key="idx" class="item-entry">
+                        <span class="item-name">{{ translateProductName(item.name) }}</span>
+                        <span class="item-meta">{{ t('orders.quantity') }}: {{ item.quantity }} @ {{ currencySymbol }}{{ item.unit_price }}</span>
+                      </div>
+                    </div>
+                  </details>
+                </td>
+                <td>{{ formatDate(o.order_date) }}</td>
+                <td>{{ formatDate(o.expected_delivery) }}</td>
+                <td><span class="lead-time-badge">{{ leadTimeDays(o) }} {{ t('orders.days') }}</span></td>
+                <td><strong>{{ currencySymbol }}{{ o.total_value.toLocaleString() }}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">{{ t('orders.allOrders') }} ({{ orders.length }})</h3>
+          <h3 class="card-title">{{ t('orders.allOrders') }} ({{ nonSubmittedOrders.length }})</h3>
         </div>
         <div class="table-container">
           <table class="orders-table">
@@ -45,7 +87,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="order in orders" :key="order.id">
+              <tr v-for="order in nonSubmittedOrders" :key="order.id">
                 <td class="col-order-number"><strong>{{ order.order_number }}</strong></td>
                 <td class="col-customer">{{ translateCustomerName(order.customer) }}</td>
                 <td class="col-items">
@@ -129,6 +171,17 @@ export default {
       loadOrders()
     })
 
+    // Why: submitted orders get their own dedicated section above, so exclude
+    // them from the main "All Orders" table to avoid showing the same row twice.
+    const nonSubmittedOrders = computed(() => orders.value.filter(o => o.status !== 'Submitted'))
+    const submittedOrders = computed(() => orders.value.filter(o => o.status === 'Submitted'))
+
+    const leadTimeDays = (o) => {
+      const start = new Date(o.order_date)
+      const end = new Date(o.expected_delivery)
+      return Math.round((end - start) / (1000 * 60 * 60 * 24))
+    }
+
     const getOrdersByStatus = (status) => {
       return orders.value.filter(order => order.status === status)
     }
@@ -160,6 +213,9 @@ export default {
       loading,
       error,
       orders,
+      nonSubmittedOrders,
+      submittedOrders,
+      leadTimeDays,
       getOrdersByStatus,
       getOrderStatusClass,
       formatDate,
@@ -275,5 +331,20 @@ export default {
 .item-meta {
   font-size: 0.813rem;
   color: #64748b;
+}
+
+.submitted-orders {
+  margin-bottom: 1.5rem;
+  border-left: 4px solid #2563eb;
+}
+
+.lead-time-badge {
+  display: inline-block;
+  padding: 0.25rem 0.625rem;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  font-weight: 600;
 }
 </style>

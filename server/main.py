@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
@@ -45,6 +46,57 @@ def apply_filters(items: list, warehouse: Optional[str] = None, category: Option
         filtered = [item for item in filtered if item.get('status', '').lower() == status.lower()]
 
     return filtered
+
+def build_restocking_recommendations(budget: float) -> list:
+    """Greedy fill of forecasted demand gaps under a budget cap.
+
+    Demand forecasts don't carry pricing, so we join to inventory by SKU to
+    pick up unit_cost. The demo data's forecast SKUs only overlap inventory
+    SKUs for a single item, so when there's no inventory match we fall back
+    to the mean inventory unit_cost — otherwise the feature would only ever
+    recommend one item regardless of budget.
+    """
+    inventory_by_sku = {item["sku"]: item for item in inventory_items}
+    fallback_unit_cost = (
+        round(sum(i["unit_cost"] for i in inventory_items) / len(inventory_items), 2)
+        if inventory_items else 0.0
+    )
+    candidates = []
+    for f in demand_forecasts:
+        inv = inventory_by_sku.get(f["item_sku"])
+        gap = max(0, f["forecasted_demand"] - f["current_demand"])
+        if gap == 0:
+            continue
+        unit_cost = inv["unit_cost"] if inv else fallback_unit_cost
+        category = inv["category"] if inv else "Uncategorized"
+        candidates.append({
+            "sku": f["item_sku"],
+            "name": f["item_name"],
+            "category": category,
+            "unit_cost": unit_cost,
+            "recommended_quantity": gap,
+            "trend": f["trend"],
+        })
+
+    # Largest-gap-first so the most under-stocked items get satisfied before
+    # the budget runs out.
+    candidates.sort(key=lambda c: c["recommended_quantity"], reverse=True)
+
+    remaining = budget
+    picks = []
+    for c in candidates:
+        full_line_total = c["recommended_quantity"] * c["unit_cost"]
+        if full_line_total <= remaining:
+            qty = c["recommended_quantity"]
+        else:
+            # Partial fill on the boundary item — buy whatever whole units fit.
+            qty = int(remaining // c["unit_cost"])
+            if qty == 0:
+                continue
+        line_total = round(qty * c["unit_cost"], 2)
+        picks.append({**c, "quantity": qty, "line_total": line_total})
+        remaining -= qty * c["unit_cost"]
+    return picks
 
 # CORS middleware
 app.add_middleware(
@@ -120,6 +172,15 @@ class CreatePurchaseOrderRequest(BaseModel):
     expected_delivery_date: str
     notes: Optional[str] = None
 
+class CreateOrderItem(BaseModel):
+    sku: str
+    name: str
+    quantity: int
+    unit_price: float
+
+class CreateOrderRequest(BaseModel):
+    items: List[CreateOrderItem]
+
 # API endpoints
 @app.get("/")
 def root():
@@ -160,6 +221,46 @@ def get_order(order_id: str):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
+
+@app.post("/api/orders", response_model=Order)
+def create_order(req: CreateOrderRequest):
+    """Create a new (restocking) order. Appended to the in-memory orders list."""
+    if not req.items:
+        raise HTTPException(status_code=400, detail="Order must contain at least one item")
+    now = datetime.now()
+    # Lead time is a product decision encoded here rather than in data — every
+    # newly submitted order ships 14 days out.
+    expected = now + timedelta(days=14)
+    # Order IDs are stringified ints in the JSON file; keep that convention.
+    new_id = str(max((int(o["id"]) for o in orders), default=0) + 1)
+    order_number = f"ORD-2025-{int(new_id):04d}"
+    total = round(sum(i.quantity * i.unit_price for i in req.items), 2)
+    new_order = {
+        "id": new_id,
+        "order_number": order_number,
+        "customer": "Internal Restocking",
+        "items": [i.model_dump() for i in req.items],
+        "status": "Submitted",
+        "order_date": now.isoformat(timespec="seconds"),
+        "expected_delivery": expected.isoformat(timespec="seconds"),
+        "total_value": total,
+        "actual_delivery": None,
+        "warehouse": None,
+        "category": None,
+    }
+    orders.append(new_order)
+    return new_order
+
+@app.get("/api/restocking/recommendations")
+def get_restocking_recommendations(budget: float = 50000):
+    """Recommend items to restock under a budget cap."""
+    picks = build_restocking_recommendations(budget)
+    return {
+        "budget": budget,
+        "items": picks,
+        "total_cost": round(sum(p["line_total"] for p in picks), 2),
+        "remaining_budget": round(budget - sum(p["line_total"] for p in picks), 2),
+    }
 
 @app.get("/api/demand", response_model=List[DemandForecast])
 def get_demand_forecasts():
