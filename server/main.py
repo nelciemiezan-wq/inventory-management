@@ -329,12 +329,23 @@ def get_recent_transactions():
     return recent_transactions
 
 @app.get("/api/reports/quarterly")
-def get_quarterly_reports():
-    """Get quarterly performance reports"""
-    # Calculate quarterly statistics from orders
+def get_quarterly_reports(
+    warehouse: Optional[str] = None,
+    category: Optional[str] = None,
+):
+    """Get quarterly performance reports.
+
+    Why: Reports must respect the global filter bar like every other view.
+    Month/status filters intentionally don't apply here — a "quarterly
+    performance" report scoped to a single month makes no sense, and a
+    status-filtered fulfillment_rate would collapse to 0% or 100%.
+    """
+    # Apply same warehouse/category filters as the rest of the API
+    filtered_orders = apply_filters(orders, warehouse=warehouse, category=category)
+
     quarters = {}
 
-    for order in orders:
+    for order in filtered_orders:
         order_date = order.get('order_date', '')
         # Determine quarter
         if '2025-01' in order_date or '2025-02' in order_date or '2025-03' in order_date:
@@ -375,11 +386,20 @@ def get_quarterly_reports():
     return result
 
 @app.get("/api/reports/monthly-trends")
-def get_monthly_trends():
-    """Get month-over-month trends"""
+def get_monthly_trends(
+    warehouse: Optional[str] = None,
+    category: Optional[str] = None,
+):
+    """Get month-over-month trends.
+
+    Why: Same rationale as /api/reports/quarterly — month/status filters
+    don't apply to a month-over-month trend.
+    """
+    filtered_orders = apply_filters(orders, warehouse=warehouse, category=category)
+
     months = {}
 
-    for order in orders:
+    for order in filtered_orders:
         order_date = order.get('order_date', '')
         if not order_date:
             continue
